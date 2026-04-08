@@ -665,90 +665,180 @@ print(f"  Accuracy prueba: {test_scores[best_idx]:.3f}")
 
 ### Importancia de Variables
 
-Una de las grandes ventajas de los árboles es que podemos medir la **importancia** de cada variable basándonos en cuánto reduce la impureza:
+Antes de ver la fórmula, construyamos la intuición:
+
+> Imagina que el árbol es un equipo de trabajo. Las variables que hacen preguntas **cerca de la raíz** son las que más contribuyen, porque sus decisiones afectan a *todas* las observaciones. Las que aparecen en los niveles más bajos solo afectan a subconjuntos pequeños. La importancia mide exactamente esto: cuánta reducción de impureza acumuló cada variable, ponderada por el tamaño de los grupos que dividió.
+
+Formalmente, la importancia de la variable $X_j$ es:
 
 $$\text{Importancia}(X_j) = \sum_{t: \text{usa } X_j} \frac{n_t}{n} \cdot \Delta I(t)$$
 
 Donde:
+
 - $n_t$ es el número de muestras en el nodo $t$
 - $n$ es el número total de muestras
 - $\Delta I(t)$ es la reducción en impureza por la división en el nodo $t$
 
+Las importancias están normalizadas para que sumen 1, por lo que una variable con importancia 0.40 explica el 40% de la reducción total de impureza en el árbol.
+
+::: {.callout-note}
+## Limitación: sesgo hacia variables de alta cardinalidad
+
+La importancia por reducción de impureza (MDI) tiende a **sobrestimar** variables con muchos valores únicos o variables continuas, porque ofrecen más puntos de corte posibles. Esto puede inflar artificialmente su importancia frente a variables categóricas con pocos niveles.
+:::
+
 ```{python}
 #| label: feature-importance
-#| fig-cap: "Importancia de variables en árbol de decisión"
-#| fig-width: 12
+#| fig-cap: "Importancia MDI en un ejemplo ilustrativo de clasificación de clientes"
+#| fig-width: 11
 #| fig-height: 5
 #| echo: true
 
-# Entrenar árbol en dataset con más características
 from sklearn.datasets import make_classification
+from sklearn.model_selection import train_test_split
 
-# Generar datos con 10 características
-X_multi, y_multi = make_classification(
-    n_samples=500,
-    n_features=10,
-    n_informative=6,
-    n_redundant=2,
-    n_repeated=0,
+# Ejemplo ilustrativo: clasificar si un cliente comprará o no
+# Variables con nombres interpretables para facilitar la lectura
+feat_names = ['ingreso', 'edad', 'historial_credito', 'deuda_actual', 'region']
+
+np.random.seed(42)
+X_ej, y_ej = make_classification(
+    n_samples=600, n_features=5,
+    n_informative=3, n_redundant=1, n_repeated=0,
     random_state=42
 )
 
-# Nombres de características
-feature_names = [f'X{i+1}' for i in range(10)]
+X_tr, X_te, y_tr, y_te = train_test_split(X_ej, y_ej, test_size=0.3, random_state=42)
 
-# Entrenar árbol
-tree_multi = DecisionTreeClassifier(max_depth=5, random_state=42)
-tree_multi.fit(X_multi, y_multi)
+tree_ej = DecisionTreeClassifier(max_depth=4, random_state=42)
+tree_ej.fit(X_tr, y_tr)
 
-# Obtener importancias
-importances = tree_multi.feature_importances_
-indices = np.argsort(importances)[::-1]
+importances = tree_ej.feature_importances_
+idx_ord = np.argsort(importances)[::-1]
+n_feat = len(feat_names)
 
-# Visualización
 fig, axes = plt.subplots(1, 2, figsize=(12, 5))
 
-# Panel 1: Gráfico de barras
-axes[0].barh(range(10), importances[indices], color='steelblue', alpha=0.7)
-axes[0].set_yticks(range(10))
-axes[0].set_yticklabels([feature_names[i] for i in indices])
-axes[0].set_xlabel('Importancia', fontsize=11)
-axes[0].set_title('Importancia de Variables (Reducción de Impureza)', fontsize=12)
+# Panel 1: Barras de importancia MDI
+axes[0].barh(range(n_feat), importances[idx_ord], color='steelblue', alpha=0.8)
+axes[0].set_yticks(range(n_feat))
+axes[0].set_yticklabels([feat_names[i] for i in idx_ord], fontsize=10)
+axes[0].set_xlabel('Importancia MDI (fracción de impureza reducida)', fontsize=10)
+axes[0].set_title('Importancia de Variables\n(Reducción de Impureza — MDI)', fontsize=11)
 axes[0].grid(True, alpha=0.3, axis='x')
-
-# Añadir valores
-for i, (idx, imp) in enumerate(zip(indices, importances[indices])):
+for i, imp in enumerate(importances[idx_ord]):
     axes[0].text(imp + 0.005, i, f'{imp:.3f}', va='center', fontsize=9)
 
-# Panel 2: Importancia acumulada
-cumsum_importance = np.cumsum(importances[indices])
-axes[1].plot(range(1, 11), cumsum_importance, marker='o', linewidth=2.5,
+# Panel 2: Curva de importancia acumulada
+cum_imp = np.cumsum(importances[idx_ord])
+axes[1].plot(range(1, n_feat + 1), cum_imp, marker='o', linewidth=2.5,
              markersize=8, color='darkgreen')
-axes[1].fill_between(range(1, 11), cumsum_importance, alpha=0.3, color='green')
-axes[1].axhline(y=0.8, color='red', linestyle='--', linewidth=1.5,
-                label='80% de importancia')
-axes[1].axhline(y=0.95, color='orange', linestyle='--', linewidth=1.5,
-                label='95% de importancia')
-axes[1].set_xlabel('Número de Variables', fontsize=11)
-axes[1].set_ylabel('Importancia Acumulada', fontsize=11)
-axes[1].set_title('Importancia Acumulada de Variables', fontsize=12)
-axes[1].set_xticks(range(1, 11))
+axes[1].fill_between(range(1, n_feat + 1), cum_imp, alpha=0.2, color='green')
+axes[1].axhline(y=0.8,  color='red',    linestyle='--', linewidth=1.5, label='80% acumulado')
+axes[1].axhline(y=0.95, color='orange', linestyle='--', linewidth=1.5, label='95% acumulado')
+axes[1].set_xlabel('Número de variables (orden descendente de importancia)', fontsize=10)
+axes[1].set_ylabel('Importancia acumulada', fontsize=10)
+axes[1].set_title('¿Cuántas variables\nexplican el 80 / 95%?', fontsize=11)
+axes[1].set_xticks(range(1, n_feat + 1))
 axes[1].legend()
 axes[1].grid(True, alpha=0.3)
 
 plt.tight_layout()
 plt.show()
-
-# Imprimir tabla de importancias
-print("\nTabla de Importancias:")
-print("=" * 60)
-print(f"{'Variable':<12} {'Importancia':<15} {'Importancia Acum.':<20}")
-print("-" * 60)
-cumsum = 0
-for idx in indices:
-    cumsum += importances[idx]
-    print(f"{feature_names[idx]:<12} {importances[idx]:<15.4f} {cumsum:<20.4f}")
 ```
+
+En este ejemplo, `ingreso` e `historial_credito` aparecen al tope porque el árbol las usó en los nodos más altos, donde cada división afecta a cientos de observaciones. `region`, en cambio, solo aparece en ramas profundas y acumula poca importancia.
+
+### Permutation Importance: una alternativa más robusta
+
+La importancia MDI se calcula **durante el entrenamiento** a partir de los nodos del árbol. Tiene una limitación importante: no mide directamente qué tan útil es la variable para **generalizar a datos nuevos**.
+
+La *permutation importance* toma un camino diferente:
+
+> Toma el modelo ya entrenado y evalúalo en el conjunto de prueba. Luego **baraja aleatoriamente** los valores de una variable y vuelve a evaluar. Si el desempeño cae mucho, esa variable era crítica. Si apenas cambia, el modelo no la necesitaba para generalizar.
+
+Este enfoque es más costoso (requiere re-evaluar $k$ veces por variable) pero responde una pregunta más útil en la práctica.
+
+```{python}
+#| label: permutation-importance
+#| fig-cap: "Comparación entre importancia MDI y permutation importance"
+#| fig-width: 12
+#| fig-height: 5
+#| echo: true
+
+from sklearn.inspection import permutation_importance
+
+perm_res  = permutation_importance(tree_ej, X_te, y_te, n_repeats=30, random_state=42)
+perm_mean = perm_res.importances_mean
+perm_std  = perm_res.importances_std
+perm_ord  = np.argsort(perm_mean)[::-1]
+
+fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+
+# MDI
+axes[0].barh(range(n_feat), importances[idx_ord], color='steelblue', alpha=0.8)
+axes[0].set_yticks(range(n_feat))
+axes[0].set_yticklabels([feat_names[i] for i in idx_ord], fontsize=10)
+axes[0].set_xlabel('Importancia MDI', fontsize=10)
+axes[0].set_title('MDI\n(calculada en entrenamiento)', fontsize=11)
+axes[0].grid(True, alpha=0.3, axis='x')
+
+# Permutation importance con barras de error (incertidumbre entre repeticiones)
+axes[1].barh(range(n_feat), perm_mean[perm_ord],
+             xerr=perm_std[perm_ord],
+             color='tomato', alpha=0.8, capsize=4)
+axes[1].set_yticks(range(n_feat))
+axes[1].set_yticklabels([feat_names[i] for i in perm_ord], fontsize=10)
+axes[1].set_xlabel('Caída en accuracy al permutar', fontsize=10)
+axes[1].set_title('Permutation Importance\n(calculada en test)', fontsize=11)
+axes[1].axvline(x=0, color='black', linewidth=0.8)
+axes[1].grid(True, alpha=0.3, axis='x')
+
+plt.suptitle('MDI vs. Permutation Importance', fontsize=12)
+plt.tight_layout()
+plt.show()
+
+# Cambios de ranking entre ambas métricas
+print("Cambios de ranking entre MDI y Permutation Importance:")
+print("-" * 50)
+mdi_rk  = {feat_names[idx_ord[i]]: i + 1 for i in range(n_feat)}
+perm_rk = {feat_names[perm_ord[i]]: i + 1 for i in range(n_feat)}
+for feat in feat_names:
+    delta = abs(mdi_rk[feat] - perm_rk[feat])
+    signo = "  <-- discrepancia" if delta >= 2 else ""
+    print(f"  {feat:<20}  MDI: #{mdi_rk[feat]}  |  Perm: #{perm_rk[feat]}{signo}")
+```
+
+Las barras de error en la permutation importance reflejan la variabilidad entre las 30 repeticiones de la permutación. Una barra larga indica que la importancia de esa variable es **inestable** — señal de posible correlación con otra variable.
+
+::: {.callout-tip}
+## ¿Cuándo usar cada métrica?
+
+| Métrica | Ventaja | Limitación |
+|---|---|---|
+| **MDI** | Rápida, no requiere datos de test | Sesgada hacia variables de alta cardinalidad |
+| **Permutation** | Mide capacidad de generalización | Subestima variables correlacionadas entre sí |
+
+Si ambas coinciden en el ranking, el resultado es confiable. Si difieren notablemente, la causa más común es **multicolinealidad** entre variables.
+:::
+
+::: {.callout-warning}
+## Multicolinealidad: la importancia se fragmenta
+
+Cuando dos variables contienen información redundante (están correlacionadas), el árbol puede usar cualquiera de las dos de forma casi intercambiable. Consecuencia: la importancia se **reparte** entre ambas y ambas parecen menos relevantes de lo que son en realidad.
+
+Esto afecta especialmente a la Permutation Importance: si `X_a` y `X_b` son casi idénticas, barajar `X_a` no daña al modelo porque `X_b` sigue aportando la misma información.
+
+Antes de interpretar importancias, vale la pena revisar la matriz de correlación entre variables.
+:::
+
+::: {.callout-note}
+## Análisis profundo: dataset de cáncer de seno
+
+Los conceptos anteriores — MDI, permutation importance, multicolinealidad — cobran más sentido con un caso de uso real donde las variables tienen significado concreto y las decisiones tienen consecuencias interpretables.
+
+En el notebook [`notebooks/arboles_cancer_seno.ipynb`](../notebooks/arboles_cancer_seno.ipynb) se aplica todo lo visto en este capítulo al dataset de diagnóstico de cáncer de seno de Wisconsin: desde el EDA hasta la comparación de métricas de importancia, pasando por la interpretación clínica de qué características del tumor son más relevantes para distinguir tumores benignos de malignos.
+:::
 
 ### Extracción de Reglas
 
@@ -907,118 +997,12 @@ def plot_comparison(X, y, model1, model2, name1, name2):
 fig = plot_comparison(X_linear, y_linear, tree_model, logistic_model,
                       'Árbol de Decisión', 'Regresión Logística')
 plt.show()
-
-print("Observaciones:")
-print("=" * 60)
-print("- Regresión logística captura mejor la relación lineal subyacente")
-print("- Árbol de decisión crea fronteras rectangulares que aproximan la línea")
-print("- Para relaciones lineales, la regresión logística es más eficiente")
-print("- Para relaciones no lineales, los árboles son más flexibles")
 ```
 
-## Aplicación Práctica: Dataset Real
+::: {.callout-note}
+## Observaciones:
 
-```{python}
-#| label: real-dataset-application
-#| echo: true
-
-from sklearn.datasets import load_breast_cancer
-from sklearn.model_selection import cross_val_score, GridSearchCV
-import pandas as pd
-
-# Cargar dataset
-cancer = load_breast_cancer()
-X_cancer = cancer.data
-y_cancer = cancer.target
-
-print("DATASET: Wisconsin Breast Cancer")
-print("=" * 60)
-print(f"Número de muestras: {X_cancer.shape[0]}")
-print(f"Número de características: {X_cancer.shape[1]}")
-print(f"Clases: {cancer.target_names}")
-print(f"Distribución: {np.bincount(y_cancer)}")
-
-# Dividir datos
-X_train_c, X_test_c, y_train_c, y_test_c = train_test_split(
-    X_cancer, y_cancer, test_size=0.3, random_state=42, stratify=y_cancer
-)
-
-# 1. Árbol sin regularización
-tree_unreg = DecisionTreeClassifier(random_state=42)
-tree_unreg.fit(X_train_c, y_train_c)
-
-print("\n1. ÁRBOL SIN REGULARIZACIÓN")
-print("-" * 60)
-print(f"Profundidad: {tree_unreg.get_depth()}")
-print(f"Número de hojas: {tree_unreg.get_n_leaves()}")
-print(f"Accuracy entrenamiento: {tree_unreg.score(X_train_c, y_train_c):.3f}")
-print(f"Accuracy prueba: {tree_unreg.score(X_test_c, y_test_c):.3f}")
-
-# 2. Búsqueda de hiperparámetros óptimos
-param_grid = {
-    'max_depth': [3, 5, 7, 10, None],
-    'min_samples_split': [2, 5, 10, 20],
-    'min_samples_leaf': [1, 2, 5, 10],
-    'criterion': ['gini', 'entropy']
-}
-
-print("\n2. BÚSQUEDA DE HIPERPARÁMETROS (Grid Search)")
-print("-" * 60)
-print("Evaluando combinaciones de hiperparámetros con CV...")
-
-grid_search = GridSearchCV(
-    DecisionTreeClassifier(random_state=42),
-    param_grid,
-    cv=5,
-    scoring='accuracy',
-    n_jobs=-1
-)
-grid_search.fit(X_train_c, y_train_c)
-
-print(f"Mejor combinación de parámetros:")
-for param, value in grid_search.best_params_.items():
-    print(f"  {param}: {value}")
-
-# 3. Evaluar mejor modelo
-best_tree = grid_search.best_estimator_
-
-print("\n3. MEJOR ÁRBOL (después de optimización)")
-print("-" * 60)
-print(f"Profundidad: {best_tree.get_depth()}")
-print(f"Número de hojas: {best_tree.get_n_leaves()}")
-print(f"Accuracy entrenamiento: {best_tree.score(X_train_c, y_train_c):.3f}")
-print(f"Accuracy prueba: {best_tree.score(X_test_c, y_test_c):.3f}")
-
-# 4. Validación cruzada
-cv_scores = cross_val_score(best_tree, X_train_c, y_train_c, cv=5)
-print(f"\nValidación cruzada (5-fold):")
-print(f"  Scores: {cv_scores}")
-print(f"  Media: {cv_scores.mean():.3f} (+/- {cv_scores.std():.3f})")
-```
-
-```{python}
-#| label: cancer-feature-importance
-#| fig-cap: "Top 10 características más importantes para clasificar cáncer de mama"
-#| fig-width: 10
-#| fig-height: 6
-#| echo: true
-
-# Importancia de características
-importances_cancer = best_tree.feature_importances_
-indices_cancer = np.argsort(importances_cancer)[::-1][:10]  # Top 10
-
-plt.figure(figsize=(10, 6))
-plt.barh(range(10), importances_cancer[indices_cancer], color='coral', alpha=0.7)
-plt.yticks(range(10), [cancer.feature_names[i] for i in indices_cancer])
-plt.xlabel('Importancia (Reducción de Impureza)', fontsize=12)
-plt.title('Top 10 Características Más Importantes', fontsize=13)
-plt.gca().invert_yaxis()
-plt.grid(True, alpha=0.3, axis='x')
-
-# Añadir valores
-for i, imp in enumerate(importances_cancer[indices_cancer]):
-    plt.text(imp + 0.005, i, f'{imp:.3f}', va='center', fontsize=10)
-
-plt.tight_layout()
-plt.show()
-```
+- Regresión logística captura mejor la relación lineal subyacente
+- Árbol de decisión crea fronteras rectangulares que aproximan la línea
+- Para relaciones lineales, la regresión logística es más eficiente
+- Para relaciones no lineales, los árboles son más flexibles
