@@ -1,4 +1,18 @@
+---
+format:
+  html:
+    code-fold: true
+execute:
+  warning: false
+---
+
 # Métodos de Ensemble: Bagging y Random Forest
+
+```{python}
+#| include: false
+import warnings
+warnings.filterwarnings('ignore')
+```
 
 ## Motivación: el problema de la varianza
 
@@ -312,7 +326,7 @@ from sklearn.model_selection import train_test_split
 np.random.seed(42)
 X_tr, X_te, y_tr, y_te = train_test_split(X, y, test_size=0.3, random_state=42)
 
-B_values = [1, 3, 5, 10, 20, 50, 100, 200]
+B_values = [5, 10, 15, 20, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160, 170, 180, 190, 200]
 train_errors, test_errors, oob_errors = [], [], []
 
 for B in B_values:
@@ -353,6 +367,243 @@ plt.show()
 
 - A partir de ~50 árboles el error se estabiliza: más árboles no degradan el desempeño, solo lo estabilizan
 - El error OOB es una buena aproximación del error en test sin necesidad de un conjunto de validación separado
+
+### ¿Cuántos árboles usar?
+
+Una propiedad clave de Bagging (y de Random Forest) es que **más árboles nunca empeoran el modelo**: el error es monótonamente no creciente con $B$. La pregunta práctica es cuándo deja de valer la pena agregar más.
+
+La ganancia marginal de pasar de $B$ a $B+1$ árboles cae muy rápido. En la mayoría de los problemas, con $B \approx 100$–$200$ se captura el 95% de la reducción de varianza posible. Lo importante es que el **error OOB** permite monitorear esa convergencia sin reservar datos de validación: cuando la curva OOB se aplana, ya tienes suficientes árboles.
+
+```{python}
+#| label: bagging-cuantos-arboles
+#| fig-cap: "Convergencia del error OOB y test: retornos decrecientes a partir de ~50 árboles"
+#| fig-width: 12
+#| fig-height: 5
+#| echo: true
+
+from sklearn.ensemble import BaggingClassifier
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.datasets import make_classification
+from sklearn.model_selection import train_test_split
+import numpy as np
+import matplotlib.pyplot as plt
+
+np.random.seed(42)
+X_cnt, y_cnt = make_classification(
+    n_samples=600, n_features=15, n_informative=8, n_redundant=3, random_state=42
+)
+X_tr_cnt, X_te_cnt, y_tr_cnt, y_te_cnt = train_test_split(
+    X_cnt, y_cnt, test_size=0.3, random_state=42
+)
+
+B_range = list(range(2, 201))
+test_errors, oob_errors = [], []
+
+for B in B_range:
+    bag = BaggingClassifier(
+        estimator=DecisionTreeClassifier(),
+        n_estimators=B, bootstrap=True, oob_score=True,
+        random_state=42, n_jobs=-1
+    )
+    bag.fit(X_tr_cnt, y_tr_cnt)
+    test_errors.append(1 - bag.score(X_te_cnt, y_te_cnt))
+    oob_errors.append(1 - bag.oob_score_)
+
+test_errors = np.array(test_errors)
+oob_errors  = np.array(oob_errors)
+marginal_oob = -np.diff(oob_errors)
+
+fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+
+axes[0].plot(B_range, test_errors, linewidth=2, color='steelblue', label='Error test')
+axes[0].plot(B_range, oob_errors,  linewidth=2, color='tomato',    label='Error OOB', linestyle='--')
+axes[0].axvline(x=50,  color='gray',  linestyle=':', linewidth=1.2, label='B = 50')
+axes[0].axvline(x=100, color='black', linestyle=':', linewidth=1.2, label='B = 100')
+axes[0].set_xlabel('Número de árboles (B)', fontsize=11)
+axes[0].set_ylabel('Tasa de error', fontsize=11)
+axes[0].set_title('Error OOB vs. error test', fontsize=12)
+axes[0].legend(fontsize=10)
+axes[0].grid(True, alpha=0.3)
+
+axes[1].fill_between(B_range[1:], marginal_oob, alpha=0.4, color='tomato')
+axes[1].plot(B_range[1:], marginal_oob, linewidth=1.5, color='tomato')
+axes[1].axhline(y=0, color='black', linewidth=0.8)
+axes[1].axvline(x=50, color='gray', linestyle=':', linewidth=1.2, label='B = 50')
+axes[1].set_xlabel('Número de árboles (B)', fontsize=11)
+axes[1].set_ylabel('Reducción de error OOB al añadir 1 árbol', fontsize=11)
+axes[1].set_title('Ganancia marginal (error OOB)', fontsize=12)
+axes[1].legend(fontsize=10)
+axes[1].grid(True, alpha=0.3)
+
+plt.tight_layout()
+plt.show()
+
+print(f"Error OOB  con B=50:  {oob_errors[48]:.4f}  | Error test: {test_errors[48]:.4f}")
+print(f"Error OOB  con B=200: {oob_errors[-1]:.4f}  | Error test: {test_errors[-1]:.4f}")
+print(f"Mejora OOB de 50→200: {oob_errors[48] - oob_errors[-1]:.4f}")
+```
+
+::: {.callout-tip}
+## Regla práctica para B
+
+- **B = 50–100** es suficiente para la mayoría de los problemas
+- Usa el **error OOB** para confirmar la convergencia sin necesidad de un conjunto de validación separado
+- Si la latencia de predicción importa (producción en tiempo real), prefiere B más pequeño
+- El número de árboles nunca es el hiperparámetro más crítico — `max_features` y `max_depth` tienen mayor impacto
+:::
+
+### Importancia de variables en Bagging
+
+Cada árbol en el ensemble tiene su propia importancia MDI. Bagging la extiende naturalmente: se **promedia** sobre todos los árboles del ensemble.
+
+$$\text{Importancia}_{\text{Bag}}(X_j) = \frac{1}{B}\sum_{b=1}^B \text{MDI}_b(X_j)$$
+
+Esto produce una estimación **mucho más estable** que la de un árbol individual: al promediar sobre cientos de árboles entrenados con distintas muestras, el ruido de estimación se cancela.
+
+```{python}
+#| label: bagging-feature-importance
+#| fig-cap: "Importancia de variables: árbol individual vs. Bagging (promedio de 200 árboles)"
+#| fig-width: 13
+#| fig-height: 5
+#| echo: true
+
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.ensemble import BaggingClassifier
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.datasets import make_classification
+from sklearn.model_selection import train_test_split
+
+np.random.seed(42)
+X_fi, y_fi = make_classification(
+    n_samples=800, n_features=10, n_informative=5,
+    n_redundant=2, random_state=42
+)
+feat_names = [f'var_{i+1:02d}' for i in range(10)]
+X_tr_fi, X_te_fi, y_tr_fi, y_te_fi = train_test_split(
+    X_fi, y_fi, test_size=0.25, random_state=42
+)
+
+# Árbol individual
+single_tree = DecisionTreeClassifier(random_state=42)
+single_tree.fit(X_tr_fi, y_tr_fi)
+imp_tree = single_tree.feature_importances_
+
+# Bagging: promediar feature_importances_ de cada estimador
+bag = BaggingClassifier(
+    estimator=DecisionTreeClassifier(),
+    n_estimators=200, bootstrap=True, random_state=42, n_jobs=-1
+)
+bag.fit(X_tr_fi, y_tr_fi)
+imp_bag = np.mean([t.feature_importances_ for t in bag.estimators_], axis=0)
+std_bag  = np.std( [t.feature_importances_ for t in bag.estimators_], axis=0)
+
+# Orden por importancia en Bagging
+ord_bag = np.argsort(imp_bag)[::-1]
+
+fig, axes = plt.subplots(1, 2, figsize=(13, 5))
+
+x = np.arange(len(feat_names))
+axes[0].bar(x, imp_tree[ord_bag], color='steelblue', alpha=0.8)
+axes[0].set_xticks(x)
+axes[0].set_xticklabels([feat_names[i] for i in ord_bag], fontsize=10)
+axes[0].set_ylabel('Importancia MDI', fontsize=11)
+axes[0].set_title(f'Árbol individual\n(acc. test: {single_tree.score(X_te_fi, y_te_fi):.3f})',
+                  fontsize=12)
+axes[0].grid(True, alpha=0.3, axis='y')
+
+axes[1].bar(x, imp_bag[ord_bag], yerr=std_bag[ord_bag],
+            color='tomato', alpha=0.8, capsize=4)
+axes[1].set_xticks(x)
+axes[1].set_xticklabels([feat_names[i] for i in ord_bag], fontsize=10)
+axes[1].set_ylabel('Importancia MDI (promedio ± std)', fontsize=11)
+axes[1].set_title(f'Bagging (200 árboles)\n(acc. test: {bag.score(X_te_fi, y_te_fi):.3f})',
+                  fontsize=12)
+axes[1].grid(True, alpha=0.3, axis='y')
+
+plt.suptitle('Importancia de variables: árbol individual vs. Bagging', fontsize=13)
+plt.tight_layout()
+plt.show()
+
+print("Variable  | Árbol individual | Bagging (media ± std)")
+print("-" * 52)
+for i in ord_bag:
+    print(f"{feat_names[i]:9s} | {imp_tree[i]:.4f}           | {imp_bag[i]:.4f} ± {std_bag[i]:.4f}")
+```
+
+::: {.callout-note}
+## Estabilidad vs. árbol individual
+
+El árbol individual asigna importancias volátiles: si lo reentrenamos con una semilla diferente, el ranking puede cambiar notablemente. Bagging promedia sobre 200 árboles, reduciendo la varianza de estimación por un factor de $\approx 1/\sqrt{200}$. Las barras de error en el panel derecho muestran la dispersión entre árboles — las variables realmente informativas tienen error estándar bajo relativo a su importancia.
+:::
+
+### Comparación de fronteras de decisión: árbol individual vs. Bagging
+
+La reducción de varianza de Bagging es más intuitiva visualmente: promediar muchas fronteras angulares e irregulares produce una frontera más suave y estable.
+
+```{python}
+#| label: bagging-boundary-comparison
+#| fig-cap: "Fronteras de decisión: un árbol completo vs. Bagging con distintos B"
+#| fig-width: 14
+#| fig-height: 5
+#| echo: true
+
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.ensemble import BaggingClassifier
+from sklearn.datasets import make_moons
+from sklearn.model_selection import train_test_split
+
+np.random.seed(42)
+X_bd, y_bd = make_moons(n_samples=300, noise=0.30, random_state=42)
+X_tr_bd, X_te_bd, y_tr_bd, y_te_bd = train_test_split(
+    X_bd, y_bd, test_size=0.3, random_state=42
+)
+
+models = {
+    'Árbol individual\n(sin límite de profundidad)':
+        DecisionTreeClassifier(random_state=42),
+    'Bagging\n(B = 10)':
+        BaggingClassifier(estimator=DecisionTreeClassifier(),
+                          n_estimators=10, bootstrap=True, random_state=42),
+    'Bagging\n(B = 200)':
+        BaggingClassifier(estimator=DecisionTreeClassifier(),
+                          n_estimators=200, bootstrap=True, random_state=42, n_jobs=-1),
+}
+
+h = 0.03
+x_min, x_max = X_bd[:, 0].min() - 0.5, X_bd[:, 0].max() + 0.5
+y_min, y_max = X_bd[:, 1].min() - 0.5, X_bd[:, 1].max() + 0.5
+xx, yy = np.meshgrid(np.arange(x_min, x_max, h), np.arange(y_min, y_max, h))
+
+fig, axes = plt.subplots(1, 3, figsize=(14, 5))
+
+for ax, (name, model) in zip(axes, models.items()):
+    model.fit(X_tr_bd, y_tr_bd)
+    Z = model.predict(np.c_[xx.ravel(), yy.ravel()]).reshape(xx.shape)
+    ax.contourf(xx, yy, Z, alpha=0.35, cmap='RdBu_r')
+    ax.scatter(X_bd[:, 0], X_bd[:, 1], c=y_bd, cmap='RdBu_r',
+               edgecolors='black', s=35, alpha=0.8)
+    tr_acc = model.score(X_tr_bd, y_tr_bd)
+    te_acc = model.score(X_te_bd, y_te_bd)
+    ax.set_title(f'{name}\nTrain: {tr_acc:.3f} | Test: {te_acc:.3f}', fontsize=11)
+    ax.set_xlabel('X1'); ax.set_ylabel('X2')
+    ax.grid(True, alpha=0.2)
+
+plt.tight_layout()
+plt.show()
+```
+
+::: {.callout-note}
+## ¿Qué observar en estas fronteras?
+
+- **Árbol individual**: frontera muy irregular y angulosa — captura el ruido de entrenamiento
+- **Bagging B=10**: ya se suaviza notablemente, pero aún hay irregularidades
+- **Bagging B=200**: frontera suave y estable — el promedio de muchos árboles ruidosos converge a una frontera limpia
+
+La mejora de test de árbol→Bagging viene exclusivamente de reducir la varianza; el sesgo prácticamente no cambia.
+:::
 
 ---
 
@@ -404,6 +655,7 @@ Reducir $m$ disminuye la correlación entre árboles (baja varianza del ensemble
 ## Regla práctica
 
 Para la mayoría de los problemas, los valores por defecto de scikit-learn funcionan bien:
+
 - Clasificación: `max_features='sqrt'`
 - Regresión: `max_features=1/3`
 
@@ -429,7 +681,8 @@ X_cl, y_cl = make_classification(
 )
 X_tr, X_te, y_tr, y_te = train_test_split(X_cl, y_cl, test_size=0.3, random_state=42)
 
-B_values = [1, 5, 10, 20, 50, 100, 200]
+B_values = [5, 10, 15, 20, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160, 170, 180, 190, 200]
+
 bag_test, rf_test = [], []
 
 for B in B_values:
@@ -486,6 +739,86 @@ print(f"Error en test              — Bagging: {bag_test[-1]:.3f} | Random Fore
 ```
 
 La diferencia es clara: Random Forest produce árboles menos correlacionados entre sí, y esa decorrelación se traduce directamente en mejor desempeño.
+
+### Efecto de `max_features` sobre la correlación y el error
+
+Bagging y Random Forest son dos extremos del mismo dial: `max_features=p` (todas las variables) es Bagging, y valores menores van decorrelacionando los árboles. ¿Qué pasa en los puntos intermedios?
+
+```{python}
+#| label: rf-max-features-correlation
+#| fig-cap: "Correlación entre árboles y error de test en función de max_features (p=20)"
+#| fig-width: 13
+#| fig-height: 5
+#| echo: true
+
+from sklearn.ensemble import RandomForestClassifier
+import numpy as np
+import matplotlib.pyplot as plt
+
+p = 20
+m_values = [1, 2, 3, 4, 5, 7, 10, 14, 20]
+labels = [str(m) for m in m_values]
+labels[m_values.index(4)]  = '4 ≈ √p\n(default clf)'
+labels[m_values.index(7)]  = '7 ≈ p/3\n(default reg)'
+labels[m_values.index(20)] = '20 = p\n(Bagging)'
+
+correlaciones, test_errors_mf = [], []
+
+for m in m_values:
+    rf_m = RandomForestClassifier(
+        n_estimators=200, max_features=m, random_state=42, n_jobs=-1
+    )
+    rf_m.fit(X_tr, y_tr)
+    preds = np.array([t.predict(X_te) for t in rf_m.estimators_])
+    correlaciones.append(np.corrcoef(preds)[np.triu_indices(200, k=1)].mean())
+    test_errors_mf.append(1 - rf_m.score(X_te, y_te))
+
+x = np.arange(len(m_values))
+fig, axes = plt.subplots(1, 2, figsize=(13, 5))
+
+# Panel 1: correlación entre árboles
+color_corr = 'steelblue'
+axes[0].plot(x, correlaciones, marker='o', linewidth=2.5, color=color_corr)
+axes[0].fill_between(x, correlaciones, alpha=0.15, color=color_corr)
+for xi, (corr, label) in enumerate(zip(correlaciones, labels)):
+    axes[0].annotate(f'{corr:.3f}', (xi, corr), textcoords='offset points',
+                     xytext=(0, 8), ha='center', fontsize=9)
+axes[0].set_xticks(x)
+axes[0].set_xticklabels(labels, fontsize=9)
+axes[0].set_xlabel('max_features (m)', fontsize=11)
+axes[0].set_ylabel('Correlación media entre árboles (ρ)', fontsize=11)
+axes[0].set_title('Decorrelación al reducir m', fontsize=12)
+axes[0].grid(True, alpha=0.3)
+
+# Panel 2: error de test
+color_err = 'tomato'
+axes[1].plot(x, test_errors_mf, marker='s', linewidth=2.5, color=color_err)
+axes[1].fill_between(x, test_errors_mf, alpha=0.15, color=color_err)
+for xi, (err, label) in enumerate(zip(test_errors_mf, labels)):
+    axes[1].annotate(f'{err:.3f}', (xi, err), textcoords='offset points',
+                     xytext=(0, 8), ha='center', fontsize=9)
+axes[1].set_xticks(x)
+axes[1].set_xticklabels(labels, fontsize=9)
+axes[1].set_xlabel('max_features (m)', fontsize=11)
+axes[1].set_ylabel('Error en test', fontsize=11)
+axes[1].set_title('Error de test al reducir m', fontsize=12)
+axes[1].grid(True, alpha=0.3)
+
+plt.suptitle('Efecto de max_features: menos variables → menos correlación, pero árboles más débiles',
+             fontsize=12)
+plt.tight_layout()
+plt.show()
+```
+
+::: {.callout-note}
+## El trade-off de `max_features`
+
+- **m grande** (→ Bagging): cada árbol es fuerte individualmente, pero todos se parecen mucho → correlación alta → el promedio no gana tanto
+- **m pequeño**: árboles muy distintos entre sí (correlación baja), pero cada uno es un predictor más débil → sesgo crece
+- **El mínimo de error está en el punto intermedio**, típicamente cerca de $\sqrt{p}$ para clasificación
+
+Este trade-off sesgo–varianza *entre* árboles es el que `max_features` controla directamente.
+:::
 
 ---
 
@@ -595,7 +928,7 @@ from sklearn.tree import DecisionTreeClassifier
 from sklearn.model_selection import train_test_split
 
 np.random.seed(42)
-X_mc, y_mc = make_moons(n_samples=300, noise=0.25, random_state=42)
+X_mc, y_mc = make_moons(n_samples=300, noise=0.3, random_state=42)
 X_tr_mc, X_te_mc, y_tr_mc, y_te_mc = train_test_split(
     X_mc, y_mc, test_size=0.3, random_state=42
 )
